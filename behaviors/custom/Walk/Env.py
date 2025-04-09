@@ -135,7 +135,7 @@ class Env():
         self.obs[59] = self.internal_target[1] / MAX_LINEAR_DIST
         self.obs[60] = self.internal_rel_orientation / MAX_ROTATION_DIST
         self.obs[61] = internal_target_vel[0] / MAX_LINEAR_DIFF
-        self.obs[62] = internal_target_vel[0] / MAX_LINEAR_DIFF
+        self.obs[62] = internal_target_vel[0] / MAX_LINEAR_DIFF  # y-axis bug (kept for compatibility with trained model), see Issue #45
 
         return self.obs
 
