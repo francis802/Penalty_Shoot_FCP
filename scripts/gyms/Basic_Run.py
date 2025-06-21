@@ -6,7 +6,8 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from scripts.commons.Server import Server
 from scripts.commons.Train_Base import Train_Base
 from time import sleep
-import os, gym
+import os
+import gymnasium as gym
 import numpy as np
 
 '''
@@ -102,7 +103,7 @@ class Basic_Run(gym.Env):
         self.player.scom.receive()
 
 
-    def reset(self):
+    def reset(self, seed=None):
         '''
         Reset and stabilize the robot
         Note: for some behaviors it would be better to reduce stabilization or add noise
@@ -130,7 +131,7 @@ class Basic_Run(gym.Env):
         self.lastx = r.cheat_abs_pos[0]
         self.act = np.zeros(self.no_of_actions,np.float32)
 
-        return self.observe(True)
+        return self.observe(True), {}  # return initial observation and empty info dict
 
     def render(self, mode='human', close=False):
         return
@@ -188,7 +189,7 @@ class Basic_Run(gym.Env):
         # terminal state: the robot is falling or timeout
         terminal = r.cheat_abs_pos[2] < 0.3 or self.step_counter > 300
 
-        return self.observe(), reward, terminal, {}
+        return self.observe(), reward, terminal, False, {}
 
 
 

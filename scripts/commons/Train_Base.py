@@ -161,10 +161,11 @@ class Train_Base():
         ep_lengths_sum = 0
         ep_no = 0
 
-        obs = env.reset()
+        obs, info = env.reset()
         while True:
             action, _states = model.predict(obs, deterministic=True)
-            obs, reward, done, info = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
             ep_reward += reward
             ep_length += 1
 
@@ -172,7 +173,7 @@ class Train_Base():
                 self.control_fps(select.select([sys.stdin], [], [], 0)[0]) 
 
             if done:
-                obs = env.reset()
+                obs, info = env.reset()
                 rewards_sum += ep_reward
                 ep_lengths_sum += ep_length
                 reward_max = max(ep_reward, reward_max)

@@ -5,8 +5,31 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from scripts.commons.Server import Server
 from scripts.commons.Train_Base import Train_Base
 from time import sleep
-import os, gym
+import os
+import gymnasium as gym
 import numpy as np
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 '''
 Objective:
@@ -35,6 +58,8 @@ class Fall(gym.Env):
         no_of_actions = self.no_of_joints
         self.action_space = gym.spaces.Box(low=np.full(no_of_actions,-MAX,np.float32), high=np.full(no_of_actions,MAX,np.float32), dtype=np.float32)
 
+        self.player.scom.unofficial_move_ball((9, 0, 0.042))
+
         # Check if cheats are enabled
         assert np.any(self.player.world.robot.cheat_abs_pos), "Cheats are not enabled! Run_Utils.py -> Server -> Cheats"
         
@@ -57,31 +82,29 @@ class Fall(gym.Env):
         self.player.scom.receive()
 
 
-    def reset(self):
-        '''
-        Reset and stabilize the robot
-        Note: for some behaviors it would be better to reduce stabilization or add noise
-        '''
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)  # if you're inheriting from gym.Env, this sets the seed properly
 
         self.step_counter = 0
         r = self.player.world.robot
-        
-        for _ in range(25): 
-            self.player.scom.unofficial_beam((-3,0,0.50),0) # beam player continuously (floating above ground)
+
+        for _ in range(25):
+            self.player.scom.unofficial_beam((7, 0, 0.50), 0)
             self.player.behavior.execute("Zero")
             self.sync()
 
-        # beam player to ground
-        self.player.scom.unofficial_beam((-3,0,r.beam_height),0) 
-        r.joints_target_speed[0] = 0.01 # move head to trigger physics update (rcssserver3d bug when no joint is moving)
+        self.player.scom.unofficial_beam((7, 0, r.beam_height), 0)
+        
+        r.joints_target_speed[0] = 0.01
         self.sync()
 
-        # stabilize on ground
-        for _ in range(7): 
+        for _ in range(7):
             self.player.behavior.execute("Zero")
             self.sync()
 
-        return self.observe()
+        obs = self.observe()
+        return obs, {}  # <-- Now returns a tuple: (observation, info)
+
 
     def render(self, mode='human', close=False):
         return
@@ -104,11 +127,11 @@ class Fall(gym.Env):
         self.observe() 
 
         if self.obs[-1] < 0.15:           # terminal state: the robot has fallen successfully
-            return self.obs, 1, True, {}  # Reward: 1 (this reward will motivate a fast reaction if the return is discounted)
+            return self.obs, 1, True, False, {}  # Reward: 1 (this reward will motivate a fast reaction if the return is discounted)
         elif self.step_counter > 150:     # terminal state: 3s passed and robot has not fallen (may be stuck)
-            return self.obs, 0, True, {}
+            return self.obs, 0, True, False, {}
         else:
-            return self.obs, 0, False, {} # Reward: 0
+            return self.obs, 0, False, False, {} # Reward: 0
 
 
 

@@ -61,8 +61,15 @@ class Slot_Engine():
         In the loop, the scope does not change, nor does the var name.
         However, default parameters are evaluated when the lambda is defined.
         '''
-        return {key: (self.descriptions[key],self.auto_head_flags[key],
-                lambda reset,key=key: self.execute(key,reset), lambda key=key: self.is_ready(key)) for key in self.behaviors}
+        return {
+            key: (
+                self.descriptions[key],
+                self.auto_head_flags[key],
+                lambda reset, *args, _key=key: self.execute(_key, reset, *args),
+                lambda _key=key: self.is_ready(_key)
+            )
+            for key in self.behaviors
+        }
 
 
     def is_ready(self,name) -> bool:
@@ -78,7 +85,7 @@ class Slot_Engine():
         assert name in self.behaviors, f"Requested slot behavior does not exist: {name}"
 
 
-    def execute(self,name,reset) -> bool:
+    def execute(self,name,reset, residuals=None) -> bool:
         ''' Execute one step '''
 
         if reset: self.reset(name)
@@ -104,6 +111,10 @@ class Slot_Engine():
         # Execute 
         progress = (elapsed_ms+20) / delta_ms
         target = (angles - self.state_slot_start_angles[indices]) * progress + self.state_slot_start_angles[indices]
+
+        if residuals is not None:
+            target = target + residuals[:len(target)]
+            
         self.world.robot.set_joints_target_position_direct(indices,target,False)
 
         # Return True if finished (this is the last step)

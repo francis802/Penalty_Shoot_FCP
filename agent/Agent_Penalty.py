@@ -62,6 +62,7 @@ class Agent(Base_Agent):
                 self.state = 2 if ball_2d[1] > 0 else 3 # dive to defend
         else: # kicker
             if PM == w.M_OUR_KICKOFF and ball_2d[0] > 5: # check ball position to make sure I see it
+                print(f"Ball position: {ball_2d}, Robot: {r.loc_head_position}")
                 if self.reset_kick: 
                     self.kick_dir = random.choice([-7.5,7.5]) 
                     self.reset_kick = False

@@ -27,3 +27,13 @@ profile
 # ignore bundle folder but not bundle script
 /bundle/*
 !/bundle/bundle.sh
+
+# Ignore everything by default
+*
+
+# Keep .gitignore
+!.gitignore
+
+# Whitelist the scripts and behaviors directories
+!/scripts/
+!/behaviors/

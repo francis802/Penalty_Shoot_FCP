@@ -19,7 +19,7 @@ class Basic_Kick():
         self.ball_x_center = (self.ball_x_limits[0] + self.ball_x_limits[1])/2
         self.ball_y_center = (self.ball_y_limits[0] + self.ball_y_limits[1])/2
       
-    def execute(self,reset, direction, abort=False) -> bool: # You can add more arguments 
+    def execute(self,reset, direction, residuals=None, abort=False) -> bool: # You can add more arguments 
         '''
         Parameters
         ----------
@@ -58,7 +58,7 @@ class Basic_Kick():
 
                 self.phase += 1
 
-                return self.behavior.execute_sub_behavior("Kick_Motion", True)
+                return self.behavior.execute_sub_behavior("Kick_Motion", True, residuals)
             else:
                 dist = max(0.07, dist_to_final_target)
                 reset_walk = reset and self.behavior.previous_behavior != "Walk" # reset walk if it wasn't the previous behavior
@@ -66,7 +66,7 @@ class Basic_Kick():
                 return abort # abort only if self.phase == 0
 
         else: # define kick parameters and execute 
-            return self.behavior.execute_sub_behavior("Kick_Motion", False)
+            return self.behavior.execute_sub_behavior("Kick_Motion", False, residuals)
 
       
     def is_ready(self) -> any: # You can add more arguments 
