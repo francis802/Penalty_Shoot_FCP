@@ -81,7 +81,8 @@ class Slot_Kick(gym.Env):
         
         # Reset robot and ball positions
         #robot_x = np.random.uniform(11.7, 11.9)
-        self.player.scom.unofficial_beam((4.8, 0, r.beam_height), 0)
+        #Official ditance for player is 4.8. For training, we use 8.0
+        self.player.scom.unofficial_beam((8, 0, r.beam_height), 0)
         self.ball_pos = np.array([9, 0, 0.042])
         self.player.scom.unofficial_move_ball(self.ball_pos)
         
@@ -165,19 +166,21 @@ class Slot_Kick(gym.Env):
         ball_pos = w.ball_cheat_abs_pos
         ball_vel = w.ball_cheat_abs_vel
 
+        reward = 0.0
+
         # 1. Base reward for ball movement
-        reward = min(max(ball_vel[0], -40) / 20, 2.0) # Forward movement
+        reward += min(max(ball_vel[0], -40) / 20, 2.0) # Forward movement
         reward += min(abs(ball_vel[1]) / 10, 0.5) # Lateral movement
-        reward += min(abs(ball_vel[2]) / 5, 0.5) # Vertical movement
+        reward += min(abs(ball_vel[2]) / 5, 2.0) # Vertical movement
 
         # 2. Goal scoring rewards
         in_goal = (
-            ball_pos[0] >= goal_x and
+            ball_pos[0] >= (goal_x + 0.1) and
             goal_y_min < ball_pos[1] < goal_y_max and
             ball_pos[2] < goal_z_max
         )
         
-        missed = ball_pos[0] >= goal_x and not in_goal
+        missed = ball_pos[0] >= (goal_x + 0.1) and not in_goal
 
         if in_goal:
             reward_goal = self.exp_field_value(ball_pos[1], ball_pos[2])
