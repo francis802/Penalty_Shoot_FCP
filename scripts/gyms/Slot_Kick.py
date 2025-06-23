@@ -193,7 +193,7 @@ class Slot_Kick(gym.Env):
 
         return reward
     
-    def exp_field_value(self, y, z, k=3.0, a=1.0, b=0.0):
+    def exp_field_value(self, y, z, k=3.0, a=1.0, b=0.0, is_euclidean=True):
         """
         Query the exponential field value at a given (y, z) coordinate.
 
@@ -210,7 +210,11 @@ class Slot_Kick(gym.Env):
         z_min, z_max = 0.0, 0.8
 
         if y_min <= y <= y_max and z_min <= z <= z_max:
-            distance = np.sqrt(y**2 + z**2)
+            distance = 0
+            if is_euclidean:
+                distance = np.sqrt(y**2 + z**2)
+            else:
+                distance = abs(y) + abs(z)
             value = a * (np.exp(k * distance) - 1 - b)
             return value
         else:
