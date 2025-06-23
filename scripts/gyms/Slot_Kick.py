@@ -190,7 +190,7 @@ class Slot_Kick(gym.Env):
 
         return reward
     
-    def exp_field_value(y, z, k=3.0, a=1.0, b=0.0):
+    def exp_field_value(self, y, z, k=3.0, a=1.0, b=0.0):
         """
         Query the exponential field value at a given (y, z) coordinate.
 
