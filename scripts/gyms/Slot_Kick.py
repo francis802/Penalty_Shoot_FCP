@@ -94,8 +94,6 @@ class Slot_Kick(gym.Env):
         self.last_ball_dist = np.linalg.norm(self.ball_pos[:2] - r.cheat_abs_pos[:2])
         self.act = np.zeros(self.no_of_actions, np.float32)
         self.in_kick_range = False
-        self.kick_started = False
-        self.is_reset = True
 
         return self.observe(True), {}
 
@@ -110,8 +108,7 @@ class Slot_Kick(gym.Env):
         r = self.player.world.robot
         w = self.player.world
         b_pos = w.ball_cheat_abs_pos
-        ball_rel = b_pos[:2] - r.cheat_abs_pos[:2]
-        b_vel = w.ball_cheat_abs_vel[:2]
+        ball_rel = b_pos - r.cheat_abs_pos
 
 
         # Exponential moving average for smooth actions
@@ -129,73 +126,92 @@ class Slot_Kick(gym.Env):
         direction = np.clip(self.act[-1], -1, 1) * 7.5
         self.behavior.execute("Basic_Kick", direction, kick_action)
         #self.behavior.slot_engine.execute("Kick_Motion", self.is_reset, kick_action)
-        self.is_reset = False
 
         self.sync()
         self.step_counter += 1
-
-        ball_speed = np.linalg.norm(b_vel)
 
         # Reward calculation
         reward = self.reward_function()
 
         # Terminal conditions
-        terminal = (
-            (r.cheat_abs_pos[2] < 0.3 and ball_speed < 0.01) or  # Fell down
-            self.step_counter >= self.max_episode_steps or
-            (self.kick_started and ball_speed < 0.01 and not self.in_kick_range)  # Ball stopped moving after kick
-        )
+        terminal = self.terminal_condition()
 
         return self.observe(), reward, terminal, False, {}
-    
-    def reward_function(self):
-        
+
+    def terminal_condition(self):
+        goal_x = 15.0
+        r = self.player.world.robot
         w = self.player.world
-        # Reward function for penalty kick
+
+        # Ball state
+        ball_pos = w.ball_cheat_abs_pos
+        ball_speed = np.linalg.norm(w.ball_cheat_abs_vel)  # Magnitude
+
+        # Improved terminal conditions
+        terminal = (
+            ball_pos[0] >= (goal_x + 0.1) or  # CRITICAL: ball crossed goal line
+            self.step_counter >= self.max_episode_steps or
+            (ball_speed < 0.01 and r.cheat_abs_pos[2] < 0.3)
+        )
+        return terminal
+
+    def reward_function(self):
+        w = self.player.world
         goal_x = 15.0
         goal_y_min, goal_y_max = -1.1, 1.1
         goal_z_max = 0.8
 
         # Ball state
-        ball_pos = self.player.world.ball_cheat_abs_pos
-        ball_vel = w.get_ball_abs_vel(6)
+        ball_pos = w.ball_cheat_abs_pos
+        ball_vel = w.ball_cheat_abs_vel
 
-        # 1. Reward for ball moving in positive x direction (toward goal), plus bonus for lateral speed
-        reward = min(max(ball_vel[0], -40) / 20, 2)  # Cap x reward to 1
-        reward += min(abs(ball_vel[1]) / 10, 0.5)  # Cap y reward to 0.5
-        reward += min(abs(ball_vel[2]) / 5, 0.5)  # Cap z reward to 0.5
+        # 1. Base reward for ball movement
+        reward = min(max(ball_vel[0], -40) / 20, 2.0) # Forward movement
+        reward += min(abs(ball_vel[1]) / 10, 0.5) # Lateral movement
+        reward += min(abs(ball_vel[2]) / 5, 0.5) # Vertical movement
 
-
-        # 2. Bonus for entering the goal area
+        # 2. Goal scoring rewards
         in_goal = (
             ball_pos[0] >= goal_x and
             goal_y_min < ball_pos[1] < goal_y_max and
             ball_pos[2] < goal_z_max
         )
+        
+        missed = ball_pos[0] >= goal_x and not in_goal
 
-        out_of_bounds = ball_pos[0] >= goal_x and not (goal_y_min < ball_pos[1] < goal_y_max)
-        if out_of_bounds:
-            reward -= 3.0
-
-        # 4. (Optional) Extra bonus for hitting close to the bottom corners and for higher ball height (up to goal_z_max)
         if in_goal:
-            left_lower = np.array([goal_x, goal_y_min + 0.05, 0.05])
-            right_lower = np.array([goal_x, goal_y_max - 0.05, 0.05])
+            reward_goal = self.exp_field_value(ball_pos[1], ball_pos[2])
+            if reward_goal is None:
+                reward_goal = 0.0
+            reward += reward_goal
 
-            # Compute distance to each bottom corner
-            dist_to_left_lower = np.linalg.norm(ball_pos - left_lower)
-            dist_to_right_lower = np.linalg.norm(ball_pos - right_lower)
-            min_lower_dist = min(dist_to_left_lower, dist_to_right_lower)
-
-            # Bonus for being close to a bottom corner
-            corner_bonus = 2.0 * (1 - np.clip(min_lower_dist / 0.3, 0, 1))
-
-            # Bonus for ball height (up to goal_z_max)
-            height_bonus = 3.0 * (np.clip(ball_pos[2] / goal_z_max, 0, 1))
-
-            reward += 3.0 + corner_bonus + height_bonus
+        elif missed:
+            reward -= 5.0  # Penalty for missing the goal
 
         return reward
+    
+    def exp_field_value(y, z, k=3.0, a=1.0, b=0.0):
+        """
+        Query the exponential field value at a given (y, z) coordinate.
+
+        Parameters:
+            k: Exponential growth rate
+            a: Scaling factor
+            b: Offset value
+        
+        Returns:
+            float: The field value if (x, y) is within the rectangle.
+            None: If the point is outside the rectangle.
+        """
+        y_min, y_max = -1.1, 1.1
+        z_min, z_max = 0.0, 0.8
+
+        if y_min <= y <= y_max and z_min <= z <= z_max:
+            distance = np.sqrt(y**2 + z**2)
+            value = a * (np.exp(k * distance) - 1 - b)
+            return value
+        else:
+            return None
 
 # Keep the same Train class as before
 class Train(Train_Base):
