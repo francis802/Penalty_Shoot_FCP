@@ -20,7 +20,7 @@ class Slot_Kick(gym.Env):
         self.max_episode_steps = 500  # ~10 seconds
         
         # State space (Basic_Run obs + ball info + kick state)
-        obs_size = 71  # 65 base + 5 step + 6 kick
+        obs_size = 72  # 65 base + 6 ball info + 1 side to kick
         self.obs = np.zeros(obs_size, np.float32)
         self.observation_space = gym.spaces.Box(
             low=np.full(obs_size, -np.inf, np.float32),
@@ -46,7 +46,7 @@ class Slot_Kick(gym.Env):
         r = self.player.world.robot
         w = self.player.world
 
-        # Basic_Run observations (first 70 elements)
+        # Basic_Run observations (first 65 elements)
         self.obs[0] = self.step_counter / 100
         self.obs[1] = r.loc_head_z * 3
         self.obs[2] = r.loc_head_z_vel / 2
@@ -63,10 +63,13 @@ class Slot_Kick(gym.Env):
         self.obs[44:64] = r.joints_speed[2:22] / 6.1395
   
 
-        # Ball observations (75-80)
+        # Ball observations (65-71)
         ball_rel = w.ball_cheat_abs_pos - r.cheat_abs_pos
         self.obs[65:68] = ball_rel  # relative position
         self.obs[68:71] = w.ball_cheat_abs_vel  # velocity
+
+        # Side to kick (71)
+        self.obs[71] = self.side_to_kick
 
         return self.obs
 
@@ -95,6 +98,7 @@ class Slot_Kick(gym.Env):
         self.last_ball_dist = np.linalg.norm(self.ball_pos[:2] - r.cheat_abs_pos[:2])
         self.act = np.zeros(self.no_of_actions, np.float32)
         self.in_kick_range = False
+        self.side_to_kick = np.random.choice([-1, 1])  # Randomly choose left or right side to kick
 
         return self.observe(True), {}
 
@@ -169,9 +173,9 @@ class Slot_Kick(gym.Env):
         reward = 0.0
 
         # 1. Base reward for ball movement
-        reward += min(max(ball_vel[0], -40) / 20, 2.0) # Forward movement
-        reward += min(abs(ball_vel[1]) / 10, 0.5) # Lateral movement
-        reward += min(abs(ball_vel[2]) / 5, 2.0) # Vertical movement
+        reward += min(max(ball_vel[0], -8), 8.0) # Forward movement
+        reward += min(abs(ball_vel[1]) , 0.5) # Lateral movement
+        reward += min(abs(ball_vel[2]) / 2, 4.0) # Vertical movement
 
         # 2. Goal scoring rewards
         in_goal = (
@@ -183,13 +187,19 @@ class Slot_Kick(gym.Env):
         missed = ball_pos[0] >= (goal_x + 0.1) and not in_goal
 
         if in_goal:
-            reward_goal = self.exp_field_value(ball_pos[1], ball_pos[2])
+            # Check if the ball is being kicked in the right direction
+            if self.side_to_kick * ball_pos[1] > 0:
+                reward_goal = self.exp_field_value(ball_pos[1], ball_pos[2])
+            else:
+                reward_goal = self.exp_field_value(ball_pos[1], ball_pos[2], k=-1.0, a=2.0)
             if reward_goal is None:
                 reward_goal = 0.0
             reward += reward_goal
 
         elif missed:
-            reward -= 5.0  # Penalty for missing the goal
+            reward = -10.0  # Penalty for missing the goal
+        else:
+            reward -= 3.0  # Penalty for not scoring
 
         return reward
     
