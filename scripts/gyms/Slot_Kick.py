@@ -13,14 +13,16 @@ import numpy as np
 import math
 
 class Slot_Kick(gym.Env):
-    def __init__(self, ip, server_p, monitor_p, r_type, enable_draw) -> None:
+    def __init__(self, ip, server_p, monitor_p, r_type, enable_draw, test_mode=False) -> None:
         self.robot_type = r_type
-        self.player = Agent(ip, server_p, monitor_p, 1, self.robot_type, "Gym", True, enable_draw)
+        self.test_mode = test_mode
+        self.player = Agent(ip, server_p, monitor_p, 1, self.robot_type, "Gym_Striker", True, enable_draw)
+        self.goal_keeper = Agent(ip, server_p, monitor_p, 1, 1, "Gym_Keeper", True, enable_draw)
         self.step_counter = 0
         self.max_episode_steps = 500  # ~10 seconds
         
         # State space (Basic_Run obs + ball info + kick state)
-        obs_size = 72  # 65 base + 6 ball info + 1 side to kick
+        obs_size = 73  # 65 base + 6 ball info + + 2 goalkeeper position
         self.obs = np.zeros(obs_size, np.float32)
         self.observation_space = gym.spaces.Box(
             low=np.full(obs_size, -np.inf, np.float32),
@@ -69,13 +71,23 @@ class Slot_Kick(gym.Env):
         self.obs[68:71] = w.ball_cheat_abs_vel  # velocity
 
         # Side to kick (71)
-        self.obs[71] = self.side_to_kick
+        #self.obs[71] = self.side_to_kick
+
+        # Goalkeeper position
+        self.obs[71] = self.goal_keeper.world.robot.cheat_abs_pos[1]  # Keeper y position [-1, 1]
+        self.obs[72] = self.obs[66] - self.obs[71]  # ball_y - goalkeeper_y
+
 
         return self.obs
 
     def sync(self):
         r = self.player.world.robot
         self.player.scom.commit_and_send(r.get_command())
+
+        r2 = self.goal_keeper.world.robot
+        self.goal_keeper.scom.commit_and_send(r2.get_command())
+        
+        self.goal_keeper.scom.receive()
         self.player.scom.receive()
 
     def reset(self, seed=None):
@@ -83,21 +95,32 @@ class Slot_Kick(gym.Env):
         r = self.player.world.robot
         
         # Reset robot and ball positions
-        #robot_x = np.random.uniform(11.7, 11.9)
         #Official ditance for player is 4.8. For training, we use 8.0
         self.player.scom.unofficial_beam((8, 0, r.beam_height), 0)
+
+        if self.test_mode:
+            # For testing, set the goalkeeper at a fixed position
+            rand_keeper_y = 0.0
+        else:
+            rand_keeper_y = np.random.uniform(-1.0, 1.0)
+        
+        self.goal_keeper.scom.unofficial_beam((-14, rand_keeper_y, r.beam_height), 0)
+
         self.ball_pos = np.array([9, 0, 0.042])
         self.player.scom.unofficial_move_ball(self.ball_pos)
         
         # Stabilize
         for _ in range(25):
             self.player.behavior.execute("Zero_Bent_Knees")
+            self.goal_keeper.behavior.execute("Zero_Bent_Knees_Auto_Head")
             self.sync()
 
         # Initialize tracking variables
         self.last_ball_dist = np.linalg.norm(self.ball_pos[:2] - r.cheat_abs_pos[:2])
         self.act = np.zeros(self.no_of_actions, np.float32)
         self.in_kick_range = False
+        self.initial_velocity = True
+        self.keeper_penalty = False
         self.side_to_kick = np.random.choice([-1, 1])  # Randomly choose left or right side to kick
 
         return self.observe(True), {}
@@ -108,6 +131,7 @@ class Slot_Kick(gym.Env):
     def close(self):
         Draw.clear_all()
         self.player.terminate()
+        self.goal_keeper.terminate()
 
     def step(self, action):
         r = self.player.world.robot
@@ -128,9 +152,8 @@ class Slot_Kick(gym.Env):
         kick_action = np.concatenate(([0.0, 0.0], self.act[:20]*2))
 
         # Choose direction based on last action output (the last element of action array)
-        direction = np.clip(self.act[-1], -1, 1) * 7.5
+        direction = np.tanh(self.act[-1]) * 7.5
         self.behavior.execute("Basic_Kick", direction, kick_action)
-        #self.behavior.slot_engine.execute("Kick_Motion", self.is_reset, kick_action)
 
         self.sync()
         self.step_counter += 1
@@ -156,7 +179,9 @@ class Slot_Kick(gym.Env):
         terminal = (
             ball_pos[0] >= (goal_x + 0.1) or  # CRITICAL: ball crossed goal line
             self.step_counter >= self.max_episode_steps or
-            (ball_speed < 0.01 and r.cheat_abs_pos[2] < 0.3)
+            (ball_speed < 0.01 and r.cheat_abs_pos[2] < 0.3) or
+            (ball_speed < 0.01 and not self.initial_velocity ) or
+            (self.distance_from_keeper() < 0.15)
         )
         return terminal
 
@@ -173,9 +198,12 @@ class Slot_Kick(gym.Env):
         reward = 0.0
 
         # 1. Base reward for ball movement
-        reward += min(max(ball_vel[0], -8), 8.0) # Forward movement
-        reward += min(abs(ball_vel[1]) , 0.5) # Lateral movement
-        reward += min(abs(ball_vel[2]) / 2, 4.0) # Vertical movement
+        speed = np.linalg.norm(ball_vel)
+        if speed > 0.01 and self.initial_velocity:
+            reward += min(max(ball_vel[0], -8), 8.0) # Forward movement
+            reward += min(abs(ball_vel[1]) , 0.5) # Lateral movement
+            reward += min(abs(ball_vel[2]) / 2, 4.0) # Vertical movement
+            self.initial_velocity = False
 
         # 2. Goal scoring rewards
         in_goal = (
@@ -186,24 +214,39 @@ class Slot_Kick(gym.Env):
         
         missed = ball_pos[0] >= (goal_x + 0.1) and not in_goal
 
+        keeper_y = self.obs[-1]
+
         if in_goal:
-            # Check if the ball is being kicked in the right direction
-            if self.side_to_kick * ball_pos[1] > 0:
-                reward_goal = self.exp_field_value(ball_pos[1], ball_pos[2])
+            ''' Note: Deprecated side to kick logic. Define a continuous y coordinate for the goalkeeper for better results
+            if keeper_y == 0.0:
+                # Check if the ball is being kicked in the right direction
+                if self.side_to_kick * ball_pos[1] > 0:
+                    reward_goal = self.exp_field_value(ball_pos[1], ball_pos[2])
+                else:
+                    reward_goal = self.exp_field_value(ball_pos[1], ball_pos[2], k=-1.0, a=2.0, b=1.0)
+                if reward_goal is None:
+                    reward_goal = 0.0
+                reward += reward_goal
             else:
-                reward_goal = self.exp_field_value(ball_pos[1], ball_pos[2], k=-1.0, a=2.0)
+            '''
+            reward_goal = self.exp_field_value(ball_pos[1], ball_pos[2], y0=keeper_y, k=2.0, b=-1.0)
             if reward_goal is None:
                 reward_goal = 0.0
             reward += reward_goal
 
         elif missed:
             reward = -10.0  # Penalty for missing the goal
-        else:
-            reward -= 3.0  # Penalty for not scoring
+        elif speed < 0.01 and not self.initial_velocity:
+            reward -= 2.0  # Penalty for not scoring
+        
+        if self.distance_from_keeper() < 0.15 and not self.keeper_penalty:
+            print("Keeper penalty triggered")
+            reward -= 5.0
+            self.keeper_penalty = True
 
         return reward
     
-    def exp_field_value(self, y, z, k=3.0, a=1.0, b=0.0, is_euclidean=True):
+    def exp_field_value(self, y, z, y0=0.0, z0=0.0, k=3.0, a=1.0, b=0.0, is_euclidean=True):
         """
         Query the exponential field value at a given (y, z) coordinate.
 
@@ -222,13 +265,23 @@ class Slot_Kick(gym.Env):
         if y_min <= y <= y_max and z_min <= z <= z_max:
             distance = 0
             if is_euclidean:
-                distance = np.sqrt(y**2 + z**2)
+                distance = np.sqrt((y-y0)**2 + (z-z0)**2)
             else:
-                distance = abs(y) + abs(z)
-            value = a * (np.exp(k * distance) - 1 - b)
+                distance = abs(y-y0) + abs(z-z0)
+            value = a * (np.exp(k * distance) - 1 + b)
             return value
         else:
             return None
+    
+    def distance_from_keeper(self):
+        """
+        Calculate the distance from the goalkeeper to the ball.
+        """
+        keeper_pos = np.array(self.goal_keeper.world.robot.cheat_abs_pos)
+        keeper_pos[0] = -keeper_pos[0]  # Flip x coordinate for goalkeeper
+        keeper_pos[1] = -keeper_pos[1]  # Flip y coordinate for goalkeeper
+        ball_pos = self.player.world.ball_cheat_abs_pos
+        return np.linalg.norm(ball_pos[:2] - keeper_pos[:2])
 
 # Keep the same Train class as before
 class Train(Train_Base):
