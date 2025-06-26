@@ -43,6 +43,7 @@ class Slot_Kick(gym.Env):
         self.ball_pos = np.zeros(3, np.float32)
 
         self.behavior = self.player.behavior
+        self.keeper_behavior = self.goal_keeper.behavior
 
     def observe(self, init=False):
         r = self.player.world.robot
@@ -74,7 +75,11 @@ class Slot_Kick(gym.Env):
         #self.obs[71] = self.side_to_kick
 
         # Goalkeeper position
-        self.obs[71] = self.goal_keeper.world.robot.cheat_abs_pos[1]  # Keeper y position [-1, 1]
+        if self.test_mode:
+            self.obs[71] = self.fake_keeper_y
+        else:
+            self.obs[71] = self.goal_keeper.world.robot.cheat_abs_pos[1] # Keeper y position [-1, 1]
+
         self.obs[72] = self.obs[66] - self.obs[71]  # ball_y - goalkeeper_y
 
 
@@ -100,11 +105,9 @@ class Slot_Kick(gym.Env):
 
         if self.test_mode:
             # For testing, set the goalkeeper at a fixed position
-            rand_keeper_y = 0.0
-        else:
-            rand_keeper_y = np.random.uniform(-1.0, 1.0)
+            self.fake_keeper_y = np.random.uniform(-1.0, 1.0)
         
-        self.goal_keeper.scom.unofficial_beam((-14, rand_keeper_y, r.beam_height), 0)
+        self.goal_keeper.scom.unofficial_beam((-14, 0, r.beam_height), 0)
 
         self.ball_pos = np.array([9, 0, 0.042])
         self.player.scom.unofficial_move_ball(self.ball_pos)
@@ -122,6 +125,8 @@ class Slot_Kick(gym.Env):
         self.initial_velocity = True
         self.keeper_penalty = False
         self.side_to_kick = np.random.choice([-1, 1])  # Randomly choose left or right side to kick
+
+        self.state = 0
 
         return self.observe(True), {}
 
@@ -154,6 +159,7 @@ class Slot_Kick(gym.Env):
         # Choose direction based on last action output (the last element of action array)
         direction = np.tanh(self.act[-1]) * 7.5
         self.behavior.execute("Basic_Kick", direction, kick_action)
+        self.goalkeeper_state()  # Update goalkeeper state based on ball position and actions
 
         self.sync()
         self.step_counter += 1
@@ -165,6 +171,22 @@ class Slot_Kick(gym.Env):
         terminal = self.terminal_condition()
 
         return self.observe(), reward, terminal, False, {}
+    
+    def goalkeeper_state(self):
+        ball_2d = self.goal_keeper.world.ball_cheat_abs_pos
+        if self.state == 2: # dive left
+            self.state = 4 if self.keeper_behavior.execute("Dive_Left") else 2  # change state to wait after skill has finished
+        elif self.state == 3: # dive right
+            self.state = 4 if self.keeper_behavior.execute("Dive_Right") else 3 # change state to wait after skill has finished
+        elif self.state == 4: # wait (after diving or during opposing kick)
+            pass
+        elif self.state == 1 or self.keeper_behavior.is_ready("Get_Up"): # if getting up or fallen
+            self.state = 0 if self.keeper_behavior.execute("Get_Up") else 1 # return to normal state if get up behavior has finished
+        else: # goalkeeper
+            y_coordinate = np.clip(ball_2d[1], -1.1, 1.1)
+            self.keeper_behavior.execute("Walk", (-14,y_coordinate), True, 0, True, None) # Args: target, is_target_abs, ori, is_ori_abs, distance
+            if ball_2d[0] < -10: 
+                self.state = 2 if ball_2d[1] > 0 else 3 # dive to defend
 
     def terminal_condition(self):
         goal_x = 15.0
@@ -335,7 +357,7 @@ class Train(Train_Base):
 
         # Uses different server and monitor ports
         server = Server( self.server_p-1, self.monitor_p, 1 )
-        env = Slot_Kick( self.ip, self.server_p-1, self.monitor_p, self.robot_type, True )
+        env = Slot_Kick( self.ip, self.server_p-1, self.monitor_p, self.robot_type, True, test_mode=True )
         model = PPO.load( args["model_file"], env=env )
 
         try:
