@@ -11,51 +11,97 @@ A RoboCup 3D Soccer Simulation penalty-shootout scenario built on top of the FC 
 
 ## Project: Penalty Shootout
 
-This project implements a one-on-one penalty scenario for the RoboCup 3D simulated NAO robots:
+This project implements a one-on-one penalty scenario for the RoboCup 3D simulated NAO robots: a **striker** that learns to walk up to the ball and kick it into the goal, and a **goalkeeper** that reacts to the incoming ball and dives to defend.
 
-- The **striker** is a reinforcement-learning agent trained with PPO. It learns to walk up to a fixed ball position, align its body, and kick toward the goal. The reward function blends a *walking/approach* phase (rewarding distance reduction to the kick spot, facing the goal, body alignment, and forward movement) with a *kick* phase (rewarding ball speed, velocity directed at the goal, scoring, and aiming for the corners). The two phases are blended by a factor based on the ball's speed, so the agent transitions from approaching to kicking.
-- The **goalkeeper** uses a simple reactive policy: it tracks the ball along the goal line and, once the ball crosses a threshold, commits to a left or right dive depending on the ball's lateral position. The dives are hand-authored slot behaviors.
+### The striker (reinforcement learning)
 
-### Approach
+The striker is trained with **PPO** (Stable Baselines3) inside a custom **Gymnasium** environment. It learns to walk from its starting position to a fixed ball, align its body for a kick, and shoot toward the goal.
 
-- **RL training** is done through OpenAI Gym / Gymnasium environments and Stable Baselines3 (PPO), using the codebase's training utilities and parallel simulation servers.
-- **Reward shaping** went through several iterations (for example, comparing distance metrics and experimenting with exponential reward terms) to encourage a clean approach-then-shoot behavior.
-- **Goalkeeper dives** are implemented as slot behaviors (sequences of timed joint poses) rather than learned policies.
+The reward is a **two-phase, blended** signal. A blending factor `alpha` is derived from the ball's speed, so the agent smoothly transitions from the approach phase (ball still) to the kick phase (ball moving):
 
-### Key files
+- **Approach / walk phase** rewards:
+  - reducing the distance to the kick spot (computed via the codebase path manager),
+  - facing the goal (torso orientation toward the goal direction),
+  - body-to-ball alignment (the ball sitting in the correct position relative to the torso for a kick),
+  - forward motion (head/body speed).
+- **Kick phase** rewards:
+  - ball speed,
+  - velocity directed at the goal centre,
+  - a bonus for scoring,
+  - a bonus for aiming at the corners,
+  - a penalty for sending the ball out of bounds.
 
-| File | Role |
+An episode ends on a **goal**, the ball going **out of bounds**, the robot **falling** (and the ball stopping), or a **timeout** (step limit). Training relies on the simulator's ground-truth ("cheat") data and runs across **parallel servers** for throughput.
+
+Two gym variants were explored:
+
+- **v1 — direct joint control.** The policy outputs target positions for every joint directly. Observation: joint positions, torso height, robot position, distance to ball, and ball velocity. This is the version that carries the full two-phase approach-and-kick reward.
+- **v2 — residual control on the Step primitive.** The policy outputs **residuals** that are added on top of the targets produced by the codebase's `Step` walk primitive, with the underlying step parameters (swing height, leg extension) also nudged by the policy. Its richer observation captures the walk state (step duration, progress, active leg) alongside IMU, foot force, and joint data. In its current form v2 optimises a stable, fast walk-up (forward displacement); the kick-phase reward terms are present in the file but disabled.
+
+Reward shaping went through several iterations (for example, comparing distance metrics and experimenting with exponential reward terms) to encourage a clean approach-then-shoot behaviour.
+
+### The goalkeeper (reactive state machine)
+
+The goalkeeper is **not learned**. It is a small reactive state machine (in `agent/Agent_Penalty.py`):
+
+1. It walks along the goal line, tracking the ball's lateral (`y`) position (clamped to the goal width).
+2. Once the ball crosses a threshold along the field (`x < -10`), it **commits to a dive**: left if the ball is on the positive-`y` side, right otherwise.
+3. The dives themselves are **hand-authored slot behaviors** — `Dive_Left.xml` and `Dive_Right.xml` — sequences of timed joint poses rather than a learned policy. If the keeper falls, it runs the framework's `Get_Up` behavior.
+
+> Note: the scenario launched by `start_penalty.sh` pairs the reactive goalkeeper with a striker that uses the framework's scripted `Basic_Kick` (aimed at a random corner) for a self-contained, ready-to-watch match. The **PPO-trained striker** described above is trained, tested, and exported through the gym environments.
+
+## Repository structure
+
+This repository is the **FC Portugal Codebase** (an existing research framework, see attribution below) with a penalty-shootout scenario layered on top. The files authored for **this project** are:
+
+| Path | Role |
 |---|---|
-| `agent/Agent_Penalty.py` | Match agent for the penalty scenario: goalkeeper tracks and dives, kicker beams in and shoots. |
-| `behaviors/slot/common/Dive_Left.xml`, `Dive_Right.xml` | Hand-authored goalkeeper dive slot behaviors. |
-| `scripts/gyms/penalty_shoot_v1.py` | RL training gym (v1): direct joint-position control, blended approach + kick reward. |
-| `scripts/gyms/penalty_shoot_v2.py` | RL training gym (v2): residual control on top of the Step walk primitive. |
-| `start_penalty.sh`, `start_penalty_debug.sh` | Launch the penalty scenario (kicker vs. goalkeeper). |
+| `agent/Agent_Penalty.py` | Penalty match agent: reactive goalkeeper (track + dive) and scripted kicker that beam in and play the shootout. |
+| `scripts/gyms/penalty_shoot_v1.py` | RL training gym (v1): direct joint-position control with the blended approach + kick reward. |
+| `scripts/gyms/penalty_shoot_v2.py` | RL training gym (v2): residual control on top of the `Step` walk primitive. |
+| `behaviors/slot/common/Dive_Left.xml`, `behaviors/slot/common/Dive_Right.xml` | Hand-authored goalkeeper dive slot behaviors. |
+| `start_penalty.sh`, `start_penalty_debug.sh` | Launch the penalty scenario (kicker vs. goalkeeper; the `_debug` variant enables RoboViz drawings). |
 
-### Running it
+Everything else is the **inherited FC Portugal framework** and is **not the author's work**, including (non-exhaustively):
 
-Prerequisites (standard RoboCup 3D toolchain):
+- `agent/Base_Agent.py`, `agent/Agent.py` — base agent architecture and the default sample agent.
+- `behaviors/` — the skill set (Walk, Dribble, Get-Up, Step, Basic_Kick) and the slot/custom behavior machinery.
+- `world/`, `communication/`, `math_ops/` — world model and localization, server/monitor communication, and math utilities.
+- `cpp/` — C++ modules (localization, A* pathfinding, etc.) built automatically into shared libraries.
+- `scripts/` (commons, utils, and the other sample gyms such as `Basic_Run.py`, `Fall.py`, `Get_Up.py`), and `Run_*.py` — the training/utility launchers and runtime entry points.
+- The remaining `start_*.sh` / `kill.sh` scripts and the `bundle/` tooling.
+
+## How to run
+
+### Prerequisites
+
+Standard RoboCup 3D toolchain:
 
 - [`rcssserver3d`](https://gitlab.com/robocup-sim/SimSpark) — the simulation server.
-- [RoboViz](https://github.com/magmaOffenburg/RoboViz) — the monitor/visualizer (optional, for watching the match).
-- Python 3 with the codebase dependencies (see the documentation linked below), including Stable Baselines3 and Gymnasium for training.
+- [RoboViz](https://github.com/magmaOffenburg/RoboViz) — the monitor/visualizer (optional, for watching the match or training).
+- Python 3 with the codebase dependencies (see the [documentation](https://docs.google.com/document/d/1aJhwK2iJtU-ri_2JOB8iYvxzbPskJ8kbk_4rb3IK3yc/edit) linked below), including **Stable Baselines3** and **Gymnasium** for training.
 
-Start the simulation server (`rcssserver3d`) and, optionally, RoboViz. Then launch the penalty scenario:
+### Watch the penalty scenario
+
+Start the simulation server (`rcssserver3d`) and, optionally, RoboViz. Then launch the scenario (kicker on uniform 11 vs. goalkeeper on uniform 1):
 
 ```bash
-# kicker (uniform 11) vs. goalkeeper (uniform 1)
 ./start_penalty.sh
-# or, with debug drawings enabled:
+# or, with RoboViz debug drawings enabled:
 ./start_penalty_debug.sh
 ```
 
-To train or test the RL striker, run the gym launcher and select one of the `penalty_shoot_*` gyms:
+### Train or test the RL striker
+
+The RL striker is driven through the codebase's gym launcher:
 
 ```bash
 python3 Run_Utils.py
 ```
 
-Note: training uses the simulator's "cheat" (ground-truth) data, which must be enabled in the server settings.
+From the interactive menu, pick the **Gyms** option and select one of the `penalty_shoot` gyms (`penalty_shoot_v1` or `penalty_shoot_v2`), then choose to **train**, **retrain**, or **test** a model. Testing also exports the trained policy to a `.pkl` so it can be wired in as a custom behavior.
+
+> Training requires the simulator's **"cheat" (ground-truth) data** to be enabled — in `Run_Utils.py`, under `Server -> Cheats`. The gyms assert this and will fail fast if it is off. Training spins up several parallel servers automatically.
 
 ## Built on the FC Portugal Codebase
 
